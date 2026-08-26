@@ -9,8 +9,16 @@ const router = Router();
 
 router.use(requireUser);
 
+type FlushableResponse = {
+  flush?: () => void;
+};
+
 function writeSSE(
-  res: any,
+  res: FlushableResponse & {
+    writableEnded: boolean;
+    destroyed?: boolean;
+    write: (chunk: string) => boolean;
+  },
   data: Record<string, unknown>
 ): boolean {
   if (res.writableEnded || res.destroyed) {
@@ -22,12 +30,9 @@ function writeSSE(
       `data: ${JSON.stringify(data)}\n\n`
     );
 
-    /*
-     * Express compression/proxy middleware may expose flush().
-     * Use it when available so small SSE packets are sent immediately.
-     */
-    if (typeof res.flush === "function") {
-      res.flush();
+    const flush = res.flush;
+    if (typeof flush === "function") {
+      flush.call(res);
     }
 
     return true;
@@ -78,11 +83,9 @@ router.get("/:id", async (req, res) => {
   );
 
   if (!c.rows[0]) {
-    return res
-      .status(404)
-      .json({
-        error: "Conversation not found",
-      });
+    return res.status(404).json({
+      error: "Conversation not found",
+    });
   }
 
   const m = await db.query(
@@ -138,47 +141,27 @@ router.delete("/:id", async (req, res) => {
 router.post("/:id/messages", async (req, res) => {
   const body = z
     .object({
-      content: z
-        .string()
-        .min(1)
-        .max(100000),
-
-      providerId: z
-        .string()
-        .uuid(),
-
-      modelId: z
-        .string()
-        .uuid(),
+      content: z.string().min(1).max(100000),
+      providerId: z.string().uuid(),
+      modelId: z.string().uuid(),
     })
     .parse(req.body);
 
-  /*
-   * Validate conversation before opening SSE.
-   */
   const c = await db.query(
     `
       SELECT *
       FROM conversations
       WHERE id=$1 AND user_id=$2
     `,
-    [
-      req.params.id,
-      req.user!.id,
-    ]
+    [req.params.id, req.user!.id]
   );
 
   if (!c.rows[0]) {
-    return res
-      .status(404)
-      .json({
-        error: "Conversation not found",
-      });
+    return res.status(404).json({
+      error: "Conversation not found",
+    });
   }
 
-  /*
-   * Validate model.
-   */
   const model = await db.query(
     `
       SELECT model_id
@@ -187,23 +170,15 @@ router.post("/:id/messages", async (req, res) => {
         AND provider_id=$2
         AND enabled=true
     `,
-    [
-      body.modelId,
-      body.providerId,
-    ]
+    [body.modelId, body.providerId]
   );
 
   if (!model.rows[0]) {
-    return res
-      .status(400)
-      .json({
-        error: "Model not found or disabled",
-      });
+    return res.status(400).json({
+      error: "Model not found or disabled",
+    });
   }
 
-  /*
-   * Save user message.
-   */
   await db.query(
     `
       INSERT INTO messages(
@@ -213,15 +188,9 @@ router.post("/:id/messages", async (req, res) => {
       )
       VALUES($1,'user',$2)
     `,
-    [
-      req.params.id,
-      body.content,
-    ]
+    [req.params.id, body.content]
   );
 
-  /*
-   * Fetch conversation history.
-   */
   const history = await db.query(
     `
       SELECT role, content
@@ -233,9 +202,6 @@ router.post("/:id/messages", async (req, res) => {
     [req.params.id]
   );
 
-  /*
-   * Fetch available file context.
-   */
   const fileRows = await db.query(
     `
       SELECT id
@@ -244,16 +210,11 @@ router.post("/:id/messages", async (req, res) => {
         AND user_id=$2
         AND status='ready'
     `,
-    [
-      req.params.id,
-      req.user!.id,
-    ]
+    [req.params.id, req.user!.id]
   );
 
   const context = await retrieveRelevant(
-    fileRows.rows.map(
-      (x) => x.id
-    ),
+    fileRows.rows.map((x) => x.id),
     body.content
   );
 
@@ -283,44 +244,27 @@ ${x.content}`
       role: "system" as const,
       content: system,
     },
-    ...history.rows
-      .reverse()
-      .map((x) => ({
-        role: x.role as
-          | "user"
-          | "assistant"
-          | "system",
-        content: x.content,
-      })),
+    ...history.rows.reverse().map((x) => ({
+      role: x.role as
+        | "user"
+        | "assistant"
+        | "system",
+      content: x.content,
+    })),
   ];
 
-  /*
-   * Obtain provider before opening SSE.
-   * This means provider configuration errors can still
-   * be returned as normal JSON.
-   */
   let provider;
 
   try {
-    provider = await getProvider(
-      body.providerId
-    );
+    provider = await getProvider(body.providerId);
   } catch (error) {
-    return res
-      .status(400)
-      .json({
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to load AI provider",
-      });
+    return res.status(400).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unable to load AI provider",
+    });
   }
-
-  /*
-   * ---------------------------------------------------------
-   * SSE RESPONSE
-   * ---------------------------------------------------------
-   */
 
   res.status(200);
 
@@ -339,44 +283,26 @@ ${x.content}`
     "keep-alive"
   );
 
-  /*
-   * Disable Nginx/proxy buffering.
-   */
   res.setHeader(
     "X-Accel-Buffering",
     "no"
   );
 
-  /*
-   * Helpful for reverse proxies.
-   */
   res.setHeader(
     "X-Content-Type-Options",
     "nosniff"
   );
 
-  /*
-   * Make sure headers leave Node immediately.
-   */
   if (typeof res.flushHeaders === "function") {
     res.flushHeaders();
   }
 
-  /*
-   * Prevent Node's socket from unnecessarily buffering
-   * small packets.
-   */
   if (res.socket) {
     res.socket.setNoDelay(true);
     res.socket.setKeepAlive(true);
   }
 
-  /*
-   * Abort upstream provider request if browser closes
-   * the connection.
-   */
-  const abortController =
-    new AbortController();
+  const abortController = new AbortController();
 
   let clientDisconnected = false;
   let completed = false;
@@ -406,24 +332,11 @@ ${x.content}`
     }
   });
 
-  /*
-   * IMPORTANT:
-   * Send something immediately.
-   *
-   * This prevents the frontend from looking frozen while
-   * Router.cheap is connecting or selecting the model.
-   */
   writeSSE(res, {
     status: "connecting",
-    message:
-      "Connecting to AI provider…",
+    message: "Connecting to AI provider…",
   });
 
-  /*
-   * Small SSE comment/heartbeat.
-   * It is valid SSE and can help keep intermediaries
-   * from treating the stream as idle.
-   */
   const heartbeat = setInterval(() => {
     if (
       completed ||
@@ -436,13 +349,16 @@ ${x.content}`
     try {
       res.write(": heartbeat\n\n");
 
-      if (typeof res.flush === "function") {
-        res.flush();
+      const flush =
+        (res as unknown as FlushableResponse).flush;
+
+      if (typeof flush === "function") {
+        flush.call(res);
       }
     } catch {
       abortUpstream();
     }
-  }, 10_000);
+  }, 10000);
 
   let full = "";
 
@@ -453,14 +369,12 @@ ${x.content}`
         "AI is generating a response…",
     });
 
-    for await (const token of provider.streamChat(
-      {
-        model: model.rows[0].model_id,
-        messages,
-        temperature: 0.3,
-        signal: abortController.signal,
-      }
-    )) {
+    for await (const token of provider.streamChat({
+      model: model.rows[0].model_id,
+      messages,
+      temperature: 0.3,
+      signal: abortController.signal,
+    })) {
       if (
         clientDisconnected ||
         abortController.signal.aborted
@@ -480,10 +394,6 @@ ${x.content}`
       }
     }
 
-    /*
-     * Browser left before generation completed.
-     * Do not continue database work.
-     */
     if (
       clientDisconnected ||
       abortController.signal.aborted
@@ -491,9 +401,6 @@ ${x.content}`
       return;
     }
 
-    /*
-     * Save completed assistant response.
-     */
     if (full.trim()) {
       await db.query(
         `
@@ -504,10 +411,7 @@ ${x.content}`
           )
           VALUES($1,'assistant',$2)
         `,
-        [
-          req.params.id,
-          full,
-        ]
+        [req.params.id, full]
       );
     }
 
@@ -536,18 +440,12 @@ ${x.content}`
 
     completed = true;
 
-    /*
-     * Proper terminal SSE event.
-     */
     writeSSE(res, {
       done: true,
     });
 
     res.end();
   } catch (error) {
-    /*
-     * Client disconnect is not an application error.
-     */
     if (
       clientDisconnected ||
       abortController.signal.aborted
