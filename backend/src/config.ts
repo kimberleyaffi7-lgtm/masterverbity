@@ -7,11 +7,16 @@ function required(name: string, fallback?: string) {
 }
 
 function normalizeRedisUrl(raw: string) {
-  // Aiven Valkey exposes valkeys:// for TLS. ioredis expects rediss://.
-  return raw.replace(/^valkeys:\/\//i, "rediss://").replace(/^valkey:\/\//i, "redis://");
+  return raw
+    .replace(/^valkeys:\/\//i, "rediss://")
+    .replace(/^valkey:\/\//i, "redis://");
 }
 
-const cookieSameSite = (process.env.COOKIE_SAME_SITE ?? "lax") as "lax" | "strict" | "none";
+const cookieSameSite = (process.env.COOKIE_SAME_SITE ?? "lax") as
+  | "lax"
+  | "strict"
+  | "none";
+
 const cookieSecure = process.env.COOKIE_SECURE === "true";
 
 if (cookieSameSite === "none" && !cookieSecure) {
@@ -23,7 +28,8 @@ export const config = {
   publicOrigin: required("PUBLIC_ORIGIN", "http://localhost:8080"),
   databaseUrl: required("DATABASE_URL"),
   databaseSsl: process.env.DATABASE_SSL !== "false",
-  databaseSslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === "true",
+  databaseSslRejectUnauthorized:
+    process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === "true",
   redisUrl: normalizeRedisUrl(required("REDIS_URL")),
   s3Endpoint: required("S3_ENDPOINT"),
   s3Region: required("S3_REGION", "auto"),
@@ -32,19 +38,33 @@ export const config = {
   s3SecretKey: required("S3_SECRET_KEY"),
   jwtSecret: required("JWT_SECRET"),
   encryptionKey: required("ENCRYPTION_KEY"),
-  maxFileSize: Number(process.env.MAX_FILE_SIZE_MB ?? 350) * 1024 * 1024,
+  maxFileSize:
+    Number(process.env.MAX_FILE_SIZE_MB ?? 350) * 1024 * 1024,
   cookieSecure,
   cookieSameSite,
-  uploadPartSize: Number(process.env.UPLOAD_PART_SIZE_MB ?? 16) * 1024 * 1024,
+  uploadPartSize:
+    Number(process.env.UPLOAD_PART_SIZE_MB ?? 16) * 1024 * 1024,
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 20)
 };
 
-if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
+if (
+  !Number.isInteger(config.port) ||
+  config.port < 1 ||
+  config.port > 65535
+) {
   throw new Error("PORT must be a valid TCP port");
 }
-if (!Number.isInteger(config.maxFileSize) || config.maxFileSize <= 0) {
+
+if (
+  !Number.isInteger(config.maxFileSize) ||
+  config.maxFileSize <= 0
+) {
   throw new Error("MAX_FILE_SIZE_MB must be greater than zero");
 }
-if (!Number.isInteger(config.uploadPartSize) || config.uploadPartSize < 5 * 1024 * 1024) {
+
+if (
+  !Number.isInteger(config.uploadPartSize) ||
+  config.uploadPartSize < 5 * 1024 * 1024
+) {
   throw new Error("UPLOAD_PART_SIZE_MB must be at least 5 MB");
 }
