@@ -8,7 +8,30 @@ const state = {
   providers: [],
   files: [],
   currentRequestController: null,
+  uploadController: null,
 };
+
+function absoluteUrl(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("Upload service returned an empty URL.");
+  }
+
+  const raw = value.trim();
+
+  try {
+    const url = new URL(raw, window.location.origin);
+
+    // Presigned object-storage URLs must be absolute. Relative URLs
+    // are valid for our own API calls, but not for direct object upload.
+    if (!/^https?:$/.test(url.protocol)) {
+      throw new Error("Upload service returned an unsupported URL.");
+    }
+
+    return url.href;
+  } catch {
+    throw new Error("Upload service returned an invalid upload URL.");
+  }
+}
 
 async function api(url, opt = {}) {
   const r = await fetch(url, {
@@ -20,222 +43,130 @@ async function api(url, opt = {}) {
     ...opt,
   });
 
-  const j = await r
-    .json()
-    .catch(() => ({}));
+  const j = await r.json().catch(() => ({}));
 
   if (!r.ok) {
-    throw new Error(
-      j.error || "Request failed"
-    );
+    throw new Error(j.error || "Request failed");
   }
 
   return j;
 }
 
 function esc(s) {
-  return String(s).replace(
-    /[&<>"']/g,
-    (c) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      })[c]
-  );
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[c]);
+}
+
+function showAuth() {
+  $("#authView").classList.remove("hidden");
+  $("#appView").classList.add("hidden");
+}
+
+function showApp() {
+  $("#authView").classList.add("hidden");
+  $("#appView").classList.remove("hidden");
+  $("#userLabel").textContent = state.user.email;
+
+  if (state.user.role === "admin") {
+    $("#adminBtn").classList.remove("hidden");
+  }
 }
 
 async function boot() {
   try {
-    const j = await api(
-      "/api/auth/me"
-    );
-
+    const j = await api("/api/auth/me");
     state.user = j.user;
-
     showApp();
-
     await loadAll();
   } catch {
     showAuth();
   }
 }
 
-function showAuth() {
-  $("#authView").classList.remove(
-    "hidden"
-  );
-
-  $("#appView").classList.add(
-    "hidden"
-  );
-}
-
-function showApp() {
-  $("#authView").classList.add(
-    "hidden"
-  );
-
-  $("#appView").classList.remove(
-    "hidden"
-  );
-
-  $("#userLabel").textContent =
-    state.user.email;
-
-  if (
-    state.user.role === "admin"
-  ) {
-    $("#adminBtn").classList.remove(
-      "hidden"
+document.querySelectorAll("[data-tab]").forEach((b) => {
+  b.onclick = () => {
+    state.tab = b.dataset.tab;
+    document.querySelectorAll("[data-tab]").forEach((x) =>
+      x.classList.toggle("active", x === b)
     );
-  }
-}
-
-document
-  .querySelectorAll("[data-tab]")
-  .forEach((b) => {
-    b.onclick = () => {
-      state.tab = b.dataset.tab;
-
-      document
-        .querySelectorAll("[data-tab]")
-        .forEach((x) =>
-          x.classList.toggle(
-            "active",
-            x === b
-          )
-        );
-
-      $("#name").classList.toggle(
-        "hidden",
-        state.tab === "login"
-      );
-    };
-  });
+    $("#name").classList.toggle("hidden", state.tab === "login");
+  };
+});
 
 $("#authForm").onsubmit = async (e) => {
   e.preventDefault();
-
   $("#authError").textContent = "";
 
   try {
     const j = await api(
-      `/api/auth/${
-        state.tab === "login"
-          ? "login"
-          : "register"
-      }`,
+      `/api/auth/${state.tab === "login" ? "login" : "register"}`,
       {
         method: "POST",
         body: JSON.stringify({
           name: $("#name").value,
           email: $("#email").value,
-          password:
-            $("#password").value,
+          password: $("#password").value,
         }),
       }
     );
 
     state.user = j.user;
-
     showApp();
-
     await loadAll();
   } catch (x) {
-    $("#authError").textContent =
-      x.message;
+    $("#authError").textContent = x.message;
   }
 };
 
 $("#logout").onclick = async () => {
   abortCurrentRequest();
+  abortUpload();
 
-  await api(
-    "/api/auth/logout",
-    {
-      method: "POST",
-    }
-  );
-
+  await api("/api/auth/logout", { method: "POST" });
   location.reload();
 };
 
 $("#newChat").onclick = async () => {
   abortCurrentRequest();
+  abortUpload();
 
-  const j = await api(
-    "/api/conversations",
-    {
-      method: "POST",
-    }
-  );
-
-  state.chats.unshift(
-    j.conversation
-  );
-
-  openChat(
-    j.conversation.id
-  );
+  const j = await api("/api/conversations", { method: "POST" });
+  state.chats.unshift(j.conversation);
+  await openChat(j.conversation.id);
 };
 
 $("#menuBtn").onclick = () =>
-  $(".sidebar").classList.toggle(
-    "open"
-  );
+  $(".sidebar").classList.toggle("open");
 
 async function loadAll() {
-  const [c, p] =
-    await Promise.all([
-      api("/api/conversations"),
-      api("/api/providers"),
-    ]);
+  const [c, p] = await Promise.all([
+    api("/api/conversations"),
+    api("/api/providers"),
+  ]);
 
-  state.chats =
-    c.conversations;
-
-  state.providers =
-    p.providers;
+  state.chats = c.conversations;
+  state.providers = p.providers;
 
   renderChats();
-
   renderModels();
 
   if (!state.chats.length) {
-    const j = await api(
-      "/api/conversations",
-      {
-        method: "POST",
-      }
-    );
-
-    state.chats = [
-      j.conversation,
-    ];
+    const j = await api("/api/conversations", { method: "POST" });
+    state.chats = [j.conversation];
   }
 
-  openChat(
-    state.chats[0].id
-  );
+  await openChat(state.chats[0].id);
 }
 
 function renderChats() {
-  $("#chatList").innerHTML =
-    state.chats
-      .map(
-        (c) =>
-          `<button class="chat-item ${
-            state.chat?.id === c.id
-              ? "active"
-              : ""
-          }" onclick="openChat('${c.id}')">${esc(
-            c.title
-          )}</button>`
-      )
-      .join("");
+  $("#chatList").innerHTML = state.chats.map((c) =>
+    `<button class="chat-item ${state.chat?.id === c.id ? "active" : ""}" onclick="openChat('${c.id}')">${esc(c.title)}</button>`
+  ).join("");
 }
 
 function renderModels() {
@@ -245,160 +176,102 @@ function renderModels() {
     for (const m of p.models || []) {
       if (m.enabled) {
         opts.push(
-          `<option value="${p.id}|${m.id}">${esc(
-            p.name
-          )} — ${esc(
-            m.display_name
-          )}</option>`
+          `<option value="${p.id}|${m.id}">${esc(p.name)} — ${esc(m.display_name)}</option>`
         );
       }
     }
   }
 
-  $("#modelSelect").innerHTML =
-    opts.length
-      ? opts.join("")
-      : `<option value="">No AI model configured</option>`;
+  $("#modelSelect").innerHTML = opts.length
+    ? opts.join("")
+    : `<option value="">No AI model configured</option>`;
 }
 
 async function openChat(id) {
   abortCurrentRequest();
+  abortUpload();
 
-  const j = await api(
-    `/api/conversations/${id}`
-  );
+  const j = await api(`/api/conversations/${id}`);
 
-  state.chat =
-    j.conversation;
-
-  state.files =
-    j.files;
+  state.chat = j.conversation;
+  state.files = j.files;
 
   renderChats();
 
-  $("#chatTitle").textContent =
-    state.chat.title;
+  $("#chatTitle").textContent = state.chat.title;
 
   $("#messages").innerHTML =
-    j.messages
-      .map(
-        (m) =>
-          `<div class="msg ${m.role}">${esc(
-            m.content
-          )}</div>`
-      )
-      .join("") ||
+    j.messages.map((m) =>
+      `<div class="msg ${m.role}">${esc(m.content)}</div>`
+    ).join("") ||
     `<div class="empty">
       <h2>Start a new chat</h2>
       <p>Upload files or ask the team AI a question.</p>
     </div>`;
 
-  $("#fileList").innerHTML =
-    state.files
-      .map(
-        (f) =>
-          `<span class="file-pill">${esc(
-            f.original_name
-          )} · ${esc(
-            f.status
-          )}</span>`
-      )
-      .join("");
+  renderFileList();
 
-  $(".sidebar").classList.remove(
-    "open"
-  );
+  $(".sidebar").classList.remove("open");
+  $("#messages").scrollTop = 999999;
+}
 
-  $("#messages").scrollTop =
-    999999;
+function renderFileList() {
+  $("#fileList").innerHTML = state.files.map((f) =>
+    `<span class="file-pill">${esc(f.original_name)} · ${esc(f.status)}</span>`
+  ).join("");
 }
 
 $("#send").onclick = send;
 
-$("#input").addEventListener(
-  "keydown",
-  (e) => {
-    if (
-      e.key === "Enter" &&
-      !e.shiftKey
-    ) {
-      e.preventDefault();
-
-      send();
-    }
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
   }
-);
+});
 
 function abortCurrentRequest() {
-  if (
-    state.currentRequestController
-  ) {
+  if (state.currentRequestController) {
     try {
       state.currentRequestController.abort();
-    } catch {
-      // Already aborted.
-    }
-
-    state.currentRequestController =
-      null;
+    } catch {}
+    state.currentRequestController = null;
   }
 }
 
-/*
- * If the user navigates away, closes the tab,
- * refreshes the page, or leaves the application,
- * abort the active AI request.
- */
-window.addEventListener(
-  "pagehide",
-  () => {
-    abortCurrentRequest();
+function abortUpload() {
+  if (state.uploadController) {
+    try {
+      state.uploadController.abort();
+    } catch {}
+    state.uploadController = null;
   }
-);
+}
+
+window.addEventListener("pagehide", () => {
+  abortCurrentRequest();
+  abortUpload();
+});
 
 async function send() {
-  const text =
-    $("#input").value.trim();
+  const text = $("#input").value.trim();
+  const selected = $("#modelSelect").value;
 
-  const selected =
-    $("#modelSelect").value;
+  if (!text || !selected || !state.chat) return;
 
-  if (
-    !text ||
-    !selected ||
-    !state.chat
-  ) {
-    return;
-  }
-
-  /*
-   * Cancel any previous request.
-   */
   abortCurrentRequest();
 
-  const [
-    providerId,
-    modelId,
-  ] = selected.split("|");
-
+  const [providerId, modelId] = selected.split("|");
   $("#input").value = "";
 
   addMsg("user", text);
 
-  const box = addMsg(
-    "assistant",
-    "Connecting to AI provider…"
-  );
-
+  const box = addMsg("assistant", "Connecting to AI provider…");
   box.dataset.streaming = "true";
-
   $("#send").disabled = true;
 
-  const controller =
-    new AbortController();
-
-  state.currentRequestController =
-    controller;
+  const controller = new AbortController();
+  state.currentRequestController = controller;
 
   let gotToken = false;
   let finished = false;
@@ -408,599 +281,364 @@ async function send() {
       `/api/conversations/${state.chat.id}/messages`,
       {
         method: "POST",
-
         credentials: "include",
-
         headers: {
-          "Content-Type":
-            "application/json",
-          Accept:
-            "text/event-stream",
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
         },
-
         body: JSON.stringify({
           content: text,
           providerId,
           modelId,
         }),
-
-        signal:
-          controller.signal,
+        signal: controller.signal,
       }
     );
 
     if (!r.ok) {
-      let message =
-        "AI request failed.";
-
+      let message = "AI request failed.";
       try {
-        const error =
-          await r.json();
-
-        message =
-          error.error ||
-          message;
-      } catch {
-        // Ignore invalid JSON.
-      }
-
+        const error = await r.json();
+        message = error.error || message;
+      } catch {}
       throw new Error(message);
     }
 
     if (!r.body) {
-      throw new Error(
-        "The server did not return a streaming response."
-      );
+      throw new Error("The server did not return a streaming response.");
     }
 
-    const reader =
-      r.body.getReader();
-
-    const decoder =
-      new TextDecoder();
-
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
     let pending = "";
 
     while (true) {
-      const result =
-        await reader.read();
+      const result = await reader.read();
+      if (result.done) break;
 
-      if (result.done) {
-        break;
-      }
+      pending += decoder.decode(result.value, { stream: true });
 
-      pending += decoder.decode(
-        result.value,
-        {
-          stream: true,
-        }
-      );
-
-      const lines =
-        pending.split("\n");
-
-      pending =
-        lines.pop() || "";
+      const lines = pending.split("\n");
+      pending = lines.pop() || "";
 
       for (const rawLine of lines) {
-        const line =
-          rawLine.replace(
-            /\r$/,
-            ""
-          );
+        const line = rawLine.replace(/\r$/, "");
 
-        /*
-         * Ignore SSE comments such as:
-         *
-         * : heartbeat
-         */
-        if (
-          !line ||
-          line.startsWith(":")
-        ) {
+        if (!line || line.startsWith(":") || !line.startsWith("data:")) {
           continue;
         }
 
-        if (
-          !line.startsWith("data:")
-        ) {
-          continue;
-        }
-
-        const rawData =
-          line
-            .slice(5)
-            .trim();
-
-        if (!rawData) {
-          continue;
-        }
+        const rawData = line.slice(5).trim();
+        if (!rawData) continue;
 
         let data;
-
         try {
-          data =
-            JSON.parse(rawData);
+          data = JSON.parse(rawData);
         } catch {
-          /*
-           * Do not crash the stream because of
-           * an incomplete/malformed SSE fragment.
-           */
           continue;
         }
 
-        /*
-         * Server status event.
-         */
-        if (
-          data.status ===
-          "connecting"
-        ) {
-          box.textContent =
-            data.message ||
-            "Connecting to AI provider…";
-
+        if (data.status === "connecting") {
+          box.textContent = data.message || "Connecting to AI provider…";
           continue;
         }
 
-        /*
-         * Server status after provider connection.
-         */
-        if (
-          data.status ===
-          "generating"
-        ) {
+        if (data.status === "generating") {
           if (!gotToken) {
-            box.textContent =
-              data.message ||
-              "AI is generating a response…";
+            box.textContent = data.message || "AI is generating a response…";
           }
-
           continue;
         }
 
-        /*
-         * Normal streamed token.
-         */
-        if (
-          typeof data.token ===
-            "string" &&
-          data.token.length > 0
-        ) {
+        if (typeof data.token === "string" && data.token.length > 0) {
           if (!gotToken) {
             gotToken = true;
-
-            /*
-             * Remove the temporary status text
-             * before writing the first real token.
-             */
             box.textContent = "";
           }
 
-          box.textContent +=
-            data.token;
-
-          $("#messages").scrollTop =
-            999999;
+          box.textContent += data.token;
+          $("#messages").scrollTop = 999999;
         }
 
-        /*
-         * Proper terminal event.
-         */
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
         if (data.done === true) {
           finished = true;
-
           break;
         }
-
-        /*
-         * Backend/provider error.
-         */
-        if (data.error) {
-          throw new Error(
-            data.error
-          );
-        }
       }
 
-      if (finished) {
-        break;
-      }
+      if (finished) break;
     }
 
-    /*
-     * If the server closed normally without
-     * any tokens, show a useful message.
-     */
-    if (
-      !gotToken &&
-      !box.textContent.trim()
-    ) {
-      box.textContent =
-        "The AI provider returned an empty response.";
+    if (!gotToken && !box.textContent.trim()) {
+      box.textContent = "The AI provider returned an empty response.";
     }
   } catch (e) {
-    /*
-     * Abort caused by the user leaving the page
-     * is not displayed as an error.
-     */
-    if (
-      e?.name ===
-        "AbortError" ||
-      controller.signal.aborted
-    ) {
+    if (e?.name === "AbortError" || controller.signal.aborted) {
       return;
     }
 
     box.textContent =
       "Error: " +
-      (
-        e instanceof Error
-          ? e.message
-          : "AI request failed."
-      );
+      (e instanceof Error ? e.message : "AI request failed.");
   } finally {
-    if (
-      state.currentRequestController ===
-      controller
-    ) {
-      state.currentRequestController =
-        null;
+    if (state.currentRequestController === controller) {
+      state.currentRequestController = null;
     }
 
     $("#send").disabled = false;
-
     box.dataset.streaming = "false";
   }
 }
 
 function addMsg(role, text) {
-  $(
-    "#messages"
-  )
-    .querySelector(".empty")
-    ?.remove();
+  $("#messages").querySelector(".empty")?.remove();
 
-  const d =
-    document.createElement(
-      "div"
-    );
-
-  d.className =
-    `msg ${role}`;
-
+  const d = document.createElement("div");
+  d.className = `msg ${role}`;
   d.textContent = text;
 
   $("#messages").appendChild(d);
-
-  $("#messages").scrollTop =
-    999999;
+  $("#messages").scrollTop = 999999;
 
   return d;
 }
 
-$("#fileInput").onchange =
-  async (e) => {
-    for (const f of [
-      ...e.target.files,
-    ]) {
-      await uploadFile(f);
-    }
+$("#fileInput").onchange = async (e) => {
+  const files = [...e.target.files];
 
-    e.target.value = "";
-  };
+  for (const f of files) {
+    await uploadFile(f);
+  }
+
+  e.target.value = "";
+};
 
 async function uploadFile(file) {
-  if (
-    file.size >
-    350 * 1024 * 1024
-  ) {
-    alert(
-      "Maximum file size is 350 MB"
-    );
-
+  if (file.size > 350 * 1024 * 1024) {
+    $("#uploadStatus").textContent =
+      "Upload error: Maximum file size is 350 MB";
     return;
   }
 
+  if (!state.chat?.id) {
+    $("#uploadStatus").textContent =
+      "Upload error: Open a conversation first.";
+    return;
+  }
+
+  abortUpload();
+
+  const controller = new AbortController();
+  state.uploadController = controller;
+
   $("#uploadStatus").textContent =
-    `Uploading ${file.name}…`;
+    `Preparing upload for ${file.name}…`;
 
   try {
-    const s = await api(
-      "/api/uploads/start",
-      {
-        method: "POST",
+    // Backend route is /api/uploads.
+    const s = await api("/api/uploads/start", {
+      method: "POST",
+      signal: controller.signal,
+      body: JSON.stringify({
+        fileName: file.name,
+        fileSize: file.size,
+        contentType: file.type || "application/octet-stream",
+        conversationId: state.chat.id,
+      }),
+    });
 
-        body: JSON.stringify({
-          fileName:
-            file.name,
-          fileSize:
-            file.size,
-          contentType:
-            file.type,
-          conversationId:
-            state.chat.id,
-        }),
-      }
-    );
+    if (!s.fileId || !s.uploadId || !s.partSize || !s.parts) {
+      throw new Error("Upload service returned an incomplete upload session.");
+    }
 
     const parts = [];
 
-    for (
-      let n = 1;
-      n <= s.parts;
-      n++
-    ) {
+    for (let n = 1; n <= s.parts; n++) {
+      if (controller.signal.aborted) {
+        throw new DOMException("Upload cancelled", "AbortError");
+      }
+
       const u = await api(
-        `/api/uploads/${s.fileId}/part-url`,
+        `/api/uploads/${encodeURIComponent(s.fileId)}/part-url`,
         {
           method: "POST",
-
+          signal: controller.signal,
           body: JSON.stringify({
-            uploadId:
-              s.uploadId,
+            uploadId: s.uploadId,
             partNumber: n,
           }),
         }
       );
 
-      const start =
-        (n - 1) *
-        s.partSize;
+      // This is the critical fix for the reported "Invalid URL" error.
+      // The direct object-storage URL must be a valid absolute HTTP(S) URL.
+      const uploadUrl = absoluteUrl(u.url);
 
-      const end =
-        Math.min(
-          file.size,
-          start +
-            s.partSize
-        );
+      const start = (n - 1) * s.partSize;
+      const end = Math.min(file.size, start + s.partSize);
 
-      const rr =
-        await fetch(
-          u.url,
-          {
-            method: "PUT",
-            body: file.slice(
-              start,
-              end
-            ),
-          }
-        );
+      const rr = await fetch(uploadUrl, {
+        method: "PUT",
+        body: file.slice(start, end),
+        signal: controller.signal,
+      });
 
       if (!rr.ok) {
+        const text = await rr.text().catch(() => "");
         throw new Error(
-          "Part upload failed"
+          `Part ${n} upload failed (${rr.status}${text ? `: ${text.slice(0, 180)}` : ""})`
+        );
+      }
+
+      const etag = rr.headers.get("ETag");
+
+      if (!etag) {
+        throw new Error(
+          "Storage did not return an ETag. Check bucket CORS: expose the ETag response header."
         );
       }
 
       parts.push({
         PartNumber: n,
-        ETag:
-          rr.headers.get(
-            "ETag"
-          ) || "",
+        ETag: etag,
       });
 
-      $(
-        "#uploadStatus"
-      ).textContent =
-        `Uploading ${Math.round(
-          (n / s.parts) * 100
-        )}%`;
+      $("#uploadStatus").textContent =
+        `Uploading ${Math.round((n / s.parts) * 100)}%`;
     }
 
     await api(
-      `/api/uploads/${s.fileId}/complete`,
+      `/api/uploads/${encodeURIComponent(s.fileId)}/complete`,
       {
         method: "POST",
-
+        signal: controller.signal,
         body: JSON.stringify({
-          uploadId:
-            s.uploadId,
+          uploadId: s.uploadId,
           parts,
         }),
       }
     );
 
-    $(
-      "#uploadStatus"
-    ).textContent =
-      "Processing file…";
+    $("#uploadStatus").textContent = "Processing file…";
 
     let ready = false;
 
-    for (
-      let i = 0;
-      i < 60 && !ready;
-      i++
-    ) {
-      await new Promise(
-        (r) =>
-          setTimeout(
-            r,
-            1500
-          )
+    for (let i = 0; i < 60 && !ready; i++) {
+      if (controller.signal.aborted) {
+        throw new DOMException("Upload cancelled", "AbortError");
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      const st = await api(
+        `/api/uploads/${encodeURIComponent(s.fileId)}/status`,
+        { signal: controller.signal }
       );
 
-      const st =
-        await api(
-          `/api/uploads/${s.fileId}/status`
-        );
+      ready = st.file.status === "ready";
 
-      ready =
-        st.file.status ===
-        "ready";
-
-      if (
-        st.file.status ===
-        "failed"
-      ) {
+      if (st.file.status === "failed") {
         throw new Error(
-          st.file.processing_error ||
-            "Processing failed"
+          st.file.processing_error || "Processing failed"
         );
       }
     }
 
-    await openChat(
-      state.chat.id
-    );
+    await openChat(state.chat.id);
 
-    $(
-      "#uploadStatus"
-    ).textContent = ready
-      ? "File ready"
-      : "File still processing";
+    $("#uploadStatus").textContent =
+      ready ? "File ready" : "File still processing";
   } catch (e) {
-    $(
-      "#uploadStatus"
-    ).textContent =
-      "Upload error: " +
-      e.message;
+    if (e?.name === "AbortError" || controller.signal.aborted) {
+      $("#uploadStatus").textContent = "Upload cancelled";
+    } else {
+      $("#uploadStatus").textContent =
+        "Upload error: " +
+        (e instanceof Error ? e.message : "Upload failed");
+    }
+  } finally {
+    if (state.uploadController === controller) {
+      state.uploadController = null;
+    }
   }
 }
 
 $("#adminBtn").onclick = () => {
-  $("#adminModal").classList.remove(
-    "hidden"
-  );
-
+  $("#adminModal").classList.remove("hidden");
   renderProviders();
 };
 
 $("#closeAdmin").onclick = () => {
-  $("#adminModal").classList.add(
-    "hidden"
-  );
+  $("#adminModal").classList.add("hidden");
 };
 
 function renderProviders() {
-  $("#providers").innerHTML =
-    state.providers
-      .map(
-        (p) =>
-          `<div class="provider-row">
-            <strong>${esc(
-              p.name
-            )}</strong>
-            <div class="status">
-              ${esc(
-                p.provider_type
-              )} · ${
-                (p.models || [])
-                  .map(
-                    (m) =>
-                      esc(
-                        m.display_name
-                      )
-                  )
-                  .join(
-                    ", "
-                  ) ||
-                "no models"
-              }
-            </div>
-            <button onclick="testProvider('${p.id}')">
-              Test
-            </button>
-          </div>`
-      )
-      .join("");
+  $("#providers").innerHTML = state.providers.map((p) =>
+    `<div class="provider-row">
+      <strong>${esc(p.name)}</strong>
+      <div class="status">
+        ${esc(p.provider_type)} · ${
+          (p.models || []).map((m) => esc(m.display_name)).join(", ") || "no models"
+        }
+      </div>
+      <button onclick="testProvider('${p.id}')">Test</button>
+    </div>`
+  ).join("");
 }
 
-window.testProvider =
-  async (id) => {
+window.testProvider = async (id) => {
+  try {
     const j = await api(
-      `/api/providers/admin/providers/${id}/test`,
-      {
-        method: "POST",
-      }
+      `/api/providers/admin/providers/${encodeURIComponent(id)}/test`,
+      { method: "POST" }
     );
 
-    alert(
-      j.success
-        ? j.message
-        : "Failed: " +
-            j.message
-    );
-  };
+    alert(j.success ? j.message : "Failed: " + j.message);
+  } catch (e) {
+    alert(e.message);
+  }
+};
 
-$("#providerForm").onsubmit =
-  async (e) => {
-    e.preventDefault();
+$("#providerForm").onsubmit = async (e) => {
+  e.preventDefault();
 
-    try {
-      await api(
-        "/api/providers/admin/providers",
-        {
-          method: "POST",
+  try {
+    await api("/api/providers/admin/providers", {
+      method: "POST",
+      body: JSON.stringify({
+        name: $("#pName").value,
+        providerType: $("#pType").value,
+        baseUrl: $("#pUrl").value || undefined,
+        apiKey: $("#pKey").value,
+        models: $("#pModels").value
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .map((x) => ({
+            modelId: x,
+            displayName: x,
+          })),
+      }),
+    });
 
-          body: JSON.stringify({
-            name:
-              $("#pName").value,
+    alert("Provider added");
+    e.target.reset();
 
-            providerType:
-              $("#pType").value,
+    const p = await api("/api/providers");
+    state.providers = p.providers;
 
-            baseUrl:
-              $("#pUrl").value ||
-              undefined,
+    renderModels();
+    renderProviders();
+  } catch (x) {
+    alert(x.message);
+  }
+};
 
-            apiKey:
-              $("#pKey").value,
-
-            models:
-              $("#pModels")
-                .value
-                .split(",")
-                .map(
-                  (x) =>
-                    x.trim()
-                )
-                .filter(
-                  Boolean
-                )
-                .map(
-                  (x) => ({
-                    modelId: x,
-                    displayName:
-                      x,
-                  })
-                ),
-          }),
-        }
-      );
-
-      alert(
-        "Provider added"
-      );
-
-      e.target.reset();
-
-      const p =
-        await api(
-          "/api/providers"
-        );
-
-      state.providers =
-        p.providers;
-
-      renderModels();
-
-      renderProviders();
-    } catch (x) {
-      alert(x.message);
-    }
-  };
-
-document
-  .querySelector(
-    '[data-tab="login"]'
-  )
-  .classList.add("active");
-
-$("#name").classList.add(
-  "hidden"
-);
+document.querySelector('[data-tab="login"]').classList.add("active");
+$("#name").classList.add("hidden");
 
 boot();
