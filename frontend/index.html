@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Internal AI Chat</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<div id="authView" class="auth"><div class="card auth-card"><h1>Internal AI Chat</h1><p>Secure team AI workspace</p><div class="tabs"><button data-tab="login">Sign in</button><button data-tab="register">Create account</button></div>
+<form id="authForm"><input id="name" placeholder="Name" autocomplete="name"><input id="email" type="email" placeholder="Email" required autocomplete="email"><input id="password" type="password" placeholder="Password (8+ characters)" required autocomplete="current-password"><button class="primary" type="submit">Continue</button></form><div id="authError" class="error"></div></div></div>
+<div id="appView" class="app hidden">
+<aside class="sidebar"><div class="brand">Internal AI</div><button id="newChat" class="primary">＋ New chat</button><div id="chatList" class="chat-list"></div><div class="side-bottom"><button id="adminBtn" class="ghost hidden">⚙ Admin</button><button id="logout" class="ghost">Sign out</button></div></aside>
+<main class="main"><header><button id="menuBtn" class="icon">☰</button><div><strong id="chatTitle">New chat</strong><small id="userLabel"></small></div><select id="modelSelect"></select></header>
+<section id="messages" class="messages"></section>
+<div class="composer"><div id="fileList" class="file-list"></div><textarea id="input" placeholder="Message the team AI…" rows="1"></textarea><div class="compose-row"><label class="attach">📎 Attach <input id="fileInput" type="file" multiple></label><span id="uploadStatus"></span><button id="send" class="primary">Send ↵</button></div></div></main>
+</div>
+<div id="adminModal" class="modal hidden"><div class="card modal-card"><button class="close" id="closeAdmin">×</button><h2>Provider administration</h2><form id="providerForm"><input id="pName" placeholder="Provider name" required><select id="pType"><option value="openai-compatible">OpenAI-compatible</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option></select><input id="pUrl" placeholder="Base URL (optional)"><input id="pKey" type="password" placeholder="API key" required><input id="pModels" placeholder="Models, comma separated" required><button class="primary">Add provider</button></form><div id="providers"></div></div></div>
+<script src="/app.js"></script></body></html>
